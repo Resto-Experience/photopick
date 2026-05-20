@@ -513,9 +513,10 @@ const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly https://www.
 
 let oauthToken = null;
 let tokenClient = null;
+let tokenExpiry = 0;
+const TOKEN_REFRESH_MARGIN = 5 * 60 * 1000; // refrescar 5 min antes de expirar
 
 function initGoogleAuth() {
-  // Si no hay CLIENT_ID configurado, salteamos OAuth y mostramos la app directamente
   if (GOOGLE_CLIENT_ID.startsWith('TU_CLIENT_ID')) {
     document.getElementById('authOverlay').classList.add('hidden');
     return;
@@ -524,11 +525,21 @@ function initGoogleAuth() {
   tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
     scope: DRIVE_SCOPE,
+    prompt: '',
     callback: (resp) => {
-      if (resp.error) { toast('❌ Error al iniciar sesión'); return; }
+      if (resp.error) {
+        // Si falla el silent refresh, mostrar login
+        if (resp.error === 'interaction_required' || resp.error === 'login_required') {
+          document.getElementById('authOverlay').classList.remove('hidden');
+        } else {
+          toast('❌ Error al iniciar sesión');
+        }
+        return;
+      }
       oauthToken = resp.access_token;
-      sessionStorage.setItem('pp_oauth', oauthToken);
-      // Obtener info del usuario
+      tokenExpiry = Date.now() + (resp.expires_in || 3600) * 1000;
+      localStorage.setItem('pp_oauth_expiry', tokenExpiry);
+
       fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
         headers: { Authorization: `Bearer ${oauthToken}` }
       }).then(r => r.json()).then(info => {
@@ -537,25 +548,64 @@ function initGoogleAuth() {
         document.getElementById('userAvatarEmoji').textContent = getAvatarEmoji();
         document.getElementById('userName').textContent = firstName;
         document.getElementById('userBadge').style.display = 'flex';
-        sessionStorage.setItem('pp_user', firstName);
-        // Si es primera vez, abrir el picker
+        localStorage.setItem('pp_user', firstName);
         if (!localStorage.getItem('pp_avatar_emoji')) openAvatarPicker();
       }).catch(() => {
         document.getElementById('userBadge').style.display = 'flex';
       });
+
       document.getElementById('authOverlay').classList.add('hidden');
-      toast('✓ Sesión iniciada');
+
+      // Programar auto-refresh antes de que expire
+      scheduleTokenRefresh(resp.expires_in || 3600);
     }
   });
 
-  // Restaurar sesión si existe
-  const saved = sessionStorage.getItem('pp_oauth');
-  if (saved) {
-    oauthToken = saved;
-    document.getElementById('authOverlay').classList.add('hidden');
-    document.getElementById('userBadge').style.display = 'flex';
-    document.getElementById('userName').textContent = sessionStorage.getItem('pp_user') || '';
+  // Restaurar usuario de localStorage
+  const savedUser = localStorage.getItem('pp_user');
+  if (savedUser) {
+    document.getElementById('userName').textContent = savedUser;
     document.getElementById('userAvatarEmoji').textContent = getAvatarEmoji();
+    document.getElementById('userBadge').style.display = 'flex';
+  }
+
+  // Intentar silent refresh si ya estuvo logueado antes
+  const expiry = parseInt(localStorage.getItem('pp_oauth_expiry') || '0');
+  if (expiry > Date.now()) {
+    // Token todavía válido en teoría — intentar silent refresh
+    silentRefresh();
+  } else if (savedUser) {
+    // Expiró — intentar silent refresh igual (sin prompt)
+    silentRefresh();
+  }
+}
+
+function silentRefresh() {
+  if (!tokenClient) return;
+  try {
+    tokenClient.requestAccessToken({ prompt: '' });
+  } catch(e) {
+    document.getElementById('authOverlay').classList.remove('hidden');
+  }
+}
+
+function scheduleTokenRefresh(expiresIn) {
+  const delay = Math.max((expiresIn * 1000) - TOKEN_REFRESH_MARGIN, 60000);
+  setTimeout(() => {
+    if (oauthToken) silentRefresh();
+  }, delay);
+}
+
+async function ensureValidToken() {
+  if (!oauthToken || Date.now() > tokenExpiry - TOKEN_REFRESH_MARGIN) {
+    await new Promise((resolve) => {
+      const prevCallback = tokenClient._callback;
+      tokenClient._callback = (resp) => {
+        prevCallback(resp);
+        resolve();
+      };
+      silentRefresh();
+    });
   }
 }
 
@@ -567,9 +617,10 @@ function startGoogleLogin() {
 function logout() {
   if (oauthToken) google.accounts.oauth2.revoke(oauthToken, () => {});
   oauthToken = null;
+  tokenExpiry = 0;
+  localStorage.removeItem('pp_oauth_expiry');
+  localStorage.removeItem('pp_user');
   sessionStorage.removeItem('pp_oauth');
-  sessionStorage.removeItem('pp_user');
-  sessionStorage.removeItem('pp_avatar');
   document.getElementById('userBadge').style.display = 'none';
   document.getElementById('authOverlay').classList.remove('hidden');
 }
