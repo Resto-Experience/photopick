@@ -461,9 +461,9 @@ textarea#themesInput::placeholder, input#freeSearchInput::placeholder { color: v
         <input class="field-input" id="clientNameInput" placeholder="Ej: Baires Grill" />
       </div>
       <div class="field">
-        <div class="field-label">ID de carpeta de Google Drive</div>
-        <div class="field-hint">URL: <code>drive.google.com/drive/folders/<b>ESTE-ES-EL-ID</b></code></div>
-        <input class="field-input" id="clientFolderInput" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs" />
+        <div class="field-label">Carpetas de Google Drive</div>
+        <div class="field-hint">Pegá uno o varios links de Drive, uno por línea.</div>
+        <textarea class="field-input" id="clientFolderInput" rows="4" placeholder="https://drive.google.com/drive/folders/...&#10;https://drive.google.com/drive/folders/..." style="resize:vertical"></textarea>
       </div>
     </div>
     <div class="modal-foot">
@@ -486,9 +486,9 @@ textarea#themesInput::placeholder, input#freeSearchInput::placeholder { color: v
         <input class="field-input" id="editClientNameInput" placeholder="Ej: Baires Grill" />
       </div>
       <div class="field">
-        <div class="field-label">ID de carpeta de Google Drive</div>
-        <div class="field-hint">URL: <code>drive.google.com/drive/folders/<b>ESTE-ES-EL-ID</b></code></div>
-        <input class="field-input" id="editClientFolderInput" placeholder="1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs" />
+        <div class="field-label">Carpetas de Google Drive</div>
+        <div class="field-hint">Pegá uno o varios links de Drive, uno por línea.</div>
+        <textarea class="field-input" id="editClientFolderInput" rows="4" placeholder="https://drive.google.com/drive/folders/...&#10;https://drive.google.com/drive/folders/..." style="resize:vertical"></textarea>
       </div>
     </div>
     <div class="modal-foot">
@@ -746,19 +746,20 @@ function openEditClientModal() {
   const c = getActiveClient();
   if (!c) { toast('Elegí un cliente para editar'); return; }
   document.getElementById('editClientNameInput').value = c.name;
-  document.getElementById('editClientFolderInput').value = c.folder;
+  document.getElementById('editClientFolderInput').value = (c.folders || [c.folder]).join('\n');
   document.getElementById('editClientModal').classList.remove('hidden');
 }
 function closeEditClientModal() { document.getElementById('editClientModal').classList.add('hidden'); }
 function saveEditClient() {
   const name = document.getElementById('editClientNameInput').value.trim();
-  const folder = document.getElementById('editClientFolderInput').value.trim();
+  const folders = parseFolderIds(document.getElementById('editClientFolderInput').value.trim());
   if (!name) { toast('Escribí el nombre'); return; }
-  if (!folder) { toast('Pegá el ID de la carpeta'); return; }
+  if (!folders.length) { toast('Pegá al menos un link de carpeta'); return; }
   const idx = CLIENTS.findIndex(c => c.id === activeClientId);
   if (idx === -1) return;
   CLIENTS[idx].name = name;
-  CLIENTS[idx].folder = folder;
+  CLIENTS[idx].folder = folders[0];
+  CLIENTS[idx].folders = folders;
   saveClients();
   renderClientSelect();
   updateHeaderMeta();
@@ -788,11 +789,11 @@ function openClientModal() {
 function closeClientModal() { document.getElementById('clientModal').classList.add('hidden'); }
 function saveClient() {
   const name = document.getElementById('clientNameInput').value.trim();
-  const folder = document.getElementById('clientFolderInput').value.trim();
+  const folders = parseFolderIds(document.getElementById('clientFolderInput').value.trim());
   if (!name) { toast('Escribí el nombre'); return; }
-  if (!folder) { toast('Pegá el ID de la carpeta'); return; }
+  if (!folders.length) { toast('Pegá al menos un link de carpeta'); return; }
   const id = 'c_' + Date.now();
-  CLIENTS.push({ id, name, folder });
+  CLIENTS.push({ id, name, folder: folders[0], folders });
   saveClients(); activeClientId = id;
   renderClientSelect(); closeClientModal();
   toast(`✓ ${name} agregado`);
@@ -801,8 +802,20 @@ function saveClient() {
 renderClientSelect();
 
 // ══════════════════════════════════════════════
-//  HEADER META
+//  HELPERS
 // ══════════════════════════════════════════════
+function parseFolderId(input) {
+  if (!input) return '';
+  const match = input.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (match) return match[1];
+  return input.split('?')[0].trim();
+}
+
+function parseFolderIds(input) {
+  return input.split(/[\n,]+/)
+    .map(s => parseFolderId(s.trim()))
+    .filter(Boolean);
+}
 function updateHeaderMeta() { renderClientSelect(); }
 
 // ══════════════════════════════════════════════
@@ -905,9 +918,11 @@ async function startFreeSearch() {
   bar.style.width = '10%';
 
   try {
-    await getSubfolders(client.folder);
+    const clientFolders = client.folders || [client.folder];
+    await Promise.all(clientFolders.map(f => getSubfolders(f)));
     bar.style.width = '40%';
-    const files = await fetchDriveFilesForTheme(client.folder, CFG.driveKey, query);
+    const filesArr = await Promise.all(clientFolders.map(f => fetchDriveFilesForTheme(f, CFG.driveKey, query)));
+    const files = filesArr.flat();
     bar.style.width = '70%';
     const used = getUsedForClient(activeClientId);
     const ranked = await rankPhotos(files, query, CFG.anthropicKey, used);
@@ -1144,7 +1159,8 @@ async function startSearch() {
 
   // Precargar estructura de carpetas una sola vez
   toast('Mapeando carpetas…');
-  await getSubfolders(client.folder);
+  const clientFolders = client.folders || [client.folder];
+  await Promise.all(clientFolders.map(f => getSubfolders(f)));
   bar.style.width = '15%';
   toast(`Buscando ${themes.length} temáticas en paralelo…`);
 
@@ -1154,7 +1170,9 @@ async function startSearch() {
     updateThemeBlock(i);
 
     try {
-      const files = await fetchDriveFilesForTheme(client.folder, CFG.driveKey, themes[i].name);
+      const foldersToSearch = client.folders || [client.folder];
+      const filesArr = await Promise.all(foldersToSearch.map(f => fetchDriveFilesForTheme(f, CFG.driveKey, themes[i].name)));
+      const files = filesArr.flat();
       const ranked = await rankPhotos(files, themes[i].name, CFG.anthropicKey, used);
       themes[i].photos = ranked;
       themes[i].currentIdx = 0;
@@ -1513,7 +1531,7 @@ async function rankPhotos(files, theme, geminiKey, used) {
       const vScores = await visionRank(candidates, cleanTheme, CFG.driveKey);
       candidates.forEach((c, i) => {
         if (vScores[i] !== undefined) {
-          c.score = Math.round(vScores[i] * 0.7 + c.score * 0.3);
+          c.score = Math.round(vScores[i] * 0.3 + c.score * 0.7);
         }
       });
     } catch(e) { console.warn('Vision skipped:', e.message); }
@@ -1525,7 +1543,7 @@ async function rankPhotos(files, theme, geminiKey, used) {
     try {
       const aiScores = await aiRank(top8, cleanTheme, geminiKey);
       top8.forEach((c, i) => {
-        if (aiScores[i] !== undefined) c.score = Math.round(aiScores[i] * 0.6 + c.score * 0.4);
+        if (aiScores[i] !== undefined) c.score = Math.round(aiScores[i] * 0.4 + c.score * 0.6);
       });
       const ids = new Set(top8.map(c => c.id));
       scored = [...top8, ...candidates.filter(c => !ids.has(c.id)), ...scored.slice(16)];
