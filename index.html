@@ -643,7 +643,7 @@ window.addEventListener('load', () => {
 // ══════════════════════════════════════════════
 //  AVATAR PICKER
 // ══════════════════════════════════════════════
-const AVATARS = ['🐱','🐶','🐻','🐼','🐨','🐯','🦊','🐸','🐧','🦋','🌸','🌵','🍓','🍕','🌈','🦄','🐙','🌙','⭐','🎀','🍦','🌺','🦜','🐢','🥥','🫐','🍑','🍌','🥭','🐉','🥑','🥝','🍒','🍇','🍉','🍊','🍋','🍎','🍏','🍐','🍈','🫒','🍅','🌽','🥕','🍆','🧄','🧅','🫚'];
+const AVATARS = ['🐱','🐶','🐻','🐼','🐨','🐯','🦊','🐸','🐧','🦋','🌸','🌵','🍓','🍕','🌈','🦄','🐙','🌙','⭐','🎀','🍦','🌺','🦜','🐢','🥥','🫐','🍑','🍌','🥭','🐉','🥑','🥝','🍒','🍇','🍉','🍊','🍋','🍎','🍏','🍐','🍈','🫒','🍅','🌽','🥕','🍆','🧄','🧅'];
 
 function initAvatarGrid() {
   const saved = localStorage.getItem('pp_avatar_emoji') || '🐱';
@@ -822,16 +822,35 @@ function updateHeaderMeta() { renderClientSelect(); }
 //  MODE SWITCHING
 // ══════════════════════════════════════════════
 let currentMode = 'week';
+let weekState = { themes: [], feed: '' };
+let freeState = { feed: '' };
 
 function setMode(mode) {
+  // Guardar estado del modo actual antes de cambiar
+  if (currentMode === 'week') {
+    weekState.themes = themes;
+    weekState.feed = document.getElementById('photosFeed').innerHTML;
+  } else {
+    freeState.feed = document.getElementById('photosFeed').innerHTML;
+  }
+
   currentMode = mode;
   document.getElementById('tabWeek').classList.toggle('active', mode === 'week');
   document.getElementById('tabFree').classList.toggle('active', mode === 'free');
   document.getElementById('panelWeek').classList.toggle('active', mode === 'week');
   document.getElementById('panelFree').classList.toggle('active', mode === 'free');
-  themes = [];
-  renderFeed();
-  renderSidebar();
+
+  // Restaurar estado del modo al que volvemos
+  if (mode === 'week') {
+    themes = weekState.themes;
+    document.getElementById('photosFeed').innerHTML = weekState.feed;
+    renderSidebar('week');
+  } else {
+    themes = [];
+    document.getElementById('photosFeed').innerHTML = freeState.feed || '';
+    if (!freeState.feed) renderFeed();
+    renderSidebar('free');
+  }
 }
 
 // Enter key support — week mode
@@ -847,31 +866,67 @@ document.addEventListener('DOMContentLoaded', () => {
 // ══════════════════════════════════════════════
 //  FREE SEARCH RENDER — shows multiple photos
 // ══════════════════════════════════════════════
+let freePhotos = [];
+let freeQuery = '';
+
 function renderFreeResults(photos, query) {
   const feed = document.getElementById('photosFeed');
+  freePhotos = photos;
+  freeQuery = query;
   if (!photos.length) {
     feed.innerHTML = `<div class="state-box"><div class="state-icon">🔍</div><div class="state-title">Sin resultados</div><div class="state-sub">Probá con otra búsqueda.</div></div>`;
     return;
   }
   const used = getUsedForClient(activeClientId);
-  const cards = photos.slice(0, 12).map((photo, i) => {
-    const isCopied = !!used[photo.id];
-    return `
-      <div class="theme-block" id="free-block-${i}">
-        <div class="photo-thumb ${isCopied ? 'copied-state' : ''}" onclick="copyFreePhoto('${photo.id}','${photo.name}','${photo.thumb}', this)">
-          <img src="${photo.thumb}" alt="${photo.name}" onerror="this.style.opacity='.15'" />
-          <div class="photo-thumb-name">${photo.name}</div>
-          ${isCopied
-            ? `<div class="copied-badge">✓</div>`
-            : `<div class="copy-hint"><div class="copy-hint-icon">⎘</div><div class="copy-hint-label">copiar</div></div>`
-          }
-        </div>
-      </div>`;
-  }).join('');
-  feed.innerHTML = `<div class="free-results-header"><span class="free-results-title">${query}</span><span class="free-results-count">${Math.min(photos.length, 12)} fotos</span></div><div class="cards-grid">${cards}</div>`;
+  // Cada foto mostrada tiene su propio índice para ciclar
+  const shown = photos.slice(0, 12).map((_, i) => i); // índices actuales
+  window._freeIdxMap = shown; // guardamos qué índice del pool se muestra en cada slot
+
+  const cards = shown.map((photoIdx, slot) => renderFreeCard(slot, photoIdx, photos, used)).join('');
+  feed.innerHTML = `<div class="free-results-header"><span class="free-results-title">${query}</span><span class="free-results-count">${Math.min(photos.length, 12)} fotos</span></div><div class="cards-grid" id="freeCardsGrid">${cards}</div>`;
 }
 
-async function copyFreePhoto(id, name, thumb, el) {
+function renderFreeCard(slot, photoIdx, photos, used) {
+  const photo = photos[photoIdx];
+  if (!photo) return '';
+  const isCopied = !!(used || getUsedForClient(activeClientId))[photo.id];
+  const canChange = photos.length > 12 || photoIdx < photos.length - 1;
+  return `
+    <div class="theme-block" id="free-block-${slot}">
+      <div class="photo-thumb ${isCopied ? 'copied-state' : ''}" onclick="copyFreePhoto('${photo.id}','${photo.name}','${photo.thumb}', ${slot})">
+        <img src="${photo.thumb}" alt="${photo.name}" onerror="this.style.opacity='.15'" />
+        <div class="photo-thumb-name">${photo.name}</div>
+        ${isCopied
+          ? `<div class="copied-badge">✓</div>`
+          : `<div class="copy-hint"><div class="copy-hint-icon">⎘</div><div class="copy-hint-label">copiar</div></div>`
+        }
+      </div>
+      <div class="theme-block-actions">
+        <button class="btn-copy-photo ${isCopied ? 'copied' : ''}" onclick="copyFreePhoto('${photo.id}','${photo.name}','${photo.thumb}', ${slot})">
+          ⎘ ${isCopied ? 'copiada' : 'copiar'}
+        </button>
+        ${canChange ? `<button class="btn-change" onclick="changeFreePhoto(${slot})">↻</button>` : ''}
+      </div>
+    </div>`;
+}
+
+function changeFreePhoto(slot) {
+  if (!window._freeIdxMap) return;
+  const current = window._freeIdxMap[slot];
+  // Siguiente foto que no esté ya mostrada
+  const shown = new Set(window._freeIdxMap);
+  let next = (current + 1) % freePhotos.length;
+  let tries = 0;
+  while (shown.has(next) && tries < freePhotos.length) {
+    next = (next + 1) % freePhotos.length;
+    tries++;
+  }
+  window._freeIdxMap[slot] = next;
+  const block = document.getElementById(`free-block-${slot}`);
+  if (block) block.outerHTML = renderFreeCard(slot, next, freePhotos, getUsedForClient(activeClientId));
+}
+
+async function copyFreePhoto(id, name, thumb, slot) {
   toast('⏳ Copiando…');
   const urls = [
     `https://drive.google.com/uc?export=download&id=${id}`,
@@ -892,9 +947,12 @@ async function copyFreePhoto(id, name, thumb, el) {
   }
   if (copied) {
     markPhotoUsed(activeClientId, id);
-    el.classList.add('copied-state');
-    const badge = el.querySelector('.copy-hint');
-    if (badge) badge.outerHTML = `<div class="copied-badge">✓</div>`;
+    // Re-render the card to show copied state
+    if (window._freeIdxMap && slot !== undefined) {
+      const photoIdx = window._freeIdxMap[slot];
+      const block = document.getElementById(`free-block-${slot}`);
+      if (block) block.outerHTML = renderFreeCard(slot, photoIdx, freePhotos, getUsedForClient(activeClientId));
+    }
     toast(`✓ "${name}" copiada — pegá en Figma con Ctrl+V`);
   } else {
     window.open(`https://drive.google.com/file/d/${id}/view`, '_blank');
