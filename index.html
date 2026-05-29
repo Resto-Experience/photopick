@@ -927,13 +927,15 @@ function changeFreePhoto(slot) {
 }
 
 async function copyFreePhoto(id, name, thumb, slot) {
-  toast('⏳ Copiando…');
+  toast('⏳ Copiando en alta calidad…');
+
   const urls = [
     `https://drive.google.com/uc?export=download&id=${id}`,
     `https://drive.google.com/uc?export=view&id=${id}`,
     thumb.replace('=s220','=s1600').replace('=s400','=s1600'),
     thumb,
   ];
+
   let copied = false;
   for (const url of urls) {
     try {
@@ -945,19 +947,34 @@ async function copyFreePhoto(id, name, thumb, slot) {
       copied = true; break;
     } catch(e) { continue; }
   }
-  if (copied) {
-    markPhotoUsed(activeClientId, id);
-    // Re-render the card to show copied state
-    if (window._freeIdxMap && slot !== undefined) {
-      const photoIdx = window._freeIdxMap[slot];
-      const block = document.getElementById(`free-block-${slot}`);
-      if (block) block.outerHTML = renderFreeCard(slot, photoIdx, freePhotos, getUsedForClient(activeClientId));
-    }
-    toast(`✓ "${name}" copiada — pegá en Figma con Ctrl+V`);
-  } else {
-    window.open(`https://drive.google.com/file/d/${id}/view`, '_blank');
-    toast('Abrí en Drive y copiá desde ahí');
+
+  // Fallback con canvas
+  if (!copied) {
+    try {
+      const canvasUrl = thumb.replace('=s220','=s1600').replace('=s400','=s1600');
+      const img = new Image(); img.crossOrigin = 'anonymous';
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = canvasUrl; });
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+      canvas.getContext('2d').drawImage(img, 0, 0);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      copied = true;
+    } catch(e) {}
   }
+
+  if (!copied) {
+    toast('No se pudo copiar — intentá de nuevo');
+    return;
+  }
+
+  markPhotoUsed(activeClientId, id);
+  if (window._freeIdxMap && slot !== undefined) {
+    const photoIdx = window._freeIdxMap[slot];
+    const block = document.getElementById(`free-block-${slot}`);
+    if (block) block.outerHTML = renderFreeCard(slot, photoIdx, freePhotos, getUsedForClient(activeClientId));
+  }
+  toast(`✓ "${name}" copiada — pegá en Figma con Ctrl+V`);
 }
 async function startFreeSearch() {
   const query = document.getElementById('freeSearchInput').value.trim();
